@@ -1,11 +1,12 @@
 import streamlit as st
 import pandas as pd
 import random
+import time
 
-# アプリの基本設定
-st.set_page_config(page_title="ドローン免許 習熟度管理", page_icon="🚁", layout="wide")
+# 1. アプリの基本設定
+st.set_page_config(page_title="第2等無人航空機 試験対策", page_icon="🚁", layout="wide")
 
-# --- 1. データ読み込み ---
+# --- データ読み込み ---
 @st.cache_data
 def load_data():
     try:
@@ -16,182 +17,175 @@ def load_data():
         df['clean_options'] = df['options'].apply(clean_opt)
         return df
     except Exception as e:
-        st.error(f"CSV読み込みエラー: {e}")
+        st.error(f"CSVの読み込み失敗: {e}")
         return pd.DataFrame()
 
 df_all = load_data()
 
 # --- 2. セッション状態の初期化 ---
-if 'history' not in st.session_state:
-    st.session_state.history = []
-if 'page' not in st.session_state:
-    st.session_state.page = "ホーム・出題設定"
-if 'quiz_started' not in st.session_state:
-    st.session_state.quiz_started = False
-if 'is_paused' not in st.session_state:
-    st.session_state.is_paused = False
+if 'history' not in st.session_state: st.session_state.history = []
+if 'page' not in st.session_state: st.session_state.page = "🏠 ホーム"
+if 'quiz_started' not in st.session_state: st.session_state.quiz_started = False
+if 'is_paused' not in st.session_state: st.session_state.is_paused = False
+if 'elapsed_time' not in st.session_state: st.session_state.elapsed_time = 0
 
-# --- 3. クイズ開始・シャッフル関数 ---
+# --- 3. クイズ開始関数（ロジック維持） ---
 def start_quiz(q_count, mode, target_cat=None):
     if mode == "全分野からバランスよく":
-        # 1. まず全問題をシャッフルしたコピーを作る
         all_pool = df_all.sample(frac=1).to_dict('records')
         cats = ["規則", "システム", "運航", "リスク"]
-        selected_questions = []
-        
-        # 2. 各分野から均等に取れるだけ取る
-        per_cat = q_count // len(cats)
+        selected = []
+        per_cat = q_count // 4
         for c in cats:
             c_df = df_all[df_all['category'] == c]
             if not c_df.empty:
-                # 在庫数と目標数の小さい方を取る
-                take = min(per_cat, len(c_df))
-                selected_questions.extend(c_df.sample(take).to_dict('records'))
-        
-        # 3. 足りない分（端数や在庫不足分）を、まだ選ばれていない問題から補充する
-        already_selected_ids = [q['question'] for q in selected_questions] # 問題文をキーにして重複チェック
-        leftovers = [q for q in all_pool if q['question'] not in already_selected_ids]
-        
-        needed = q_count - len(selected_questions)
-        if needed > 0:
-            selected_questions.extend(leftovers[:needed])
-            
-        # 4. 最後に全体をもう一度シャッフル（分野が固まらないように）
-        random.shuffle(selected_questions)
-
+                selected.extend(c_df.sample(min(per_cat, len(c_df))).to_dict('records'))
+        already_q = [x['question'] for x in selected]
+        leftovers = [x for x in all_pool if x['question'] not in already_q]
+        needed = q_count - len(selected)
+        if needed > 0: selected.extend(leftovers[:needed])
+        random.shuffle(selected)
     else:
-        # 分野指定モード：その分野から指定数取る（足りなければ全件）
         target_df = df_all[df_all['category'] == target_cat]
-        take_num = min(q_count, len(target_df))
-        selected_questions = target_df.sample(take_num).to_dict('records')
+        selected = target_df.sample(min(q_count, len(target_df))).to_dict('records')
 
-    # --- 選択肢のシャッフル処理（以下は前回と同じ） ---
-    for q in selected_questions:
+    for q in selected:
         labels = ['a', 'b', 'c', 'd', 'e']
         ans_labels = str(q['answer']).split('&')
-        correct_texts = [q['clean_options'][labels.index(l)] for l in ans_labels if l in labels and labels.index(l) < len(q['clean_options'])]
+        correct_texts = [q['clean_options'][labels.index(l)] for l in ans_labels if l in labels]
         shuffled_opts = q['clean_options'][:]
         random.shuffle(shuffled_opts)
-        q['display_options'] = [f"{labels[i]}. {txt}" for i, txt in enumerate(shuffled_opts)]
-        new_ans = [labels[i] for i, txt in enumerate(shuffled_opts) if txt in correct_texts]
+        q['display_options'] = [f"{labels[i]}. {t}" for i, t in enumerate(shuffled_opts)]
+        new_ans = [labels[i] for i, t in enumerate(shuffled_opts) if t in correct_texts]
         q['correct_labels'] = "&".join(sorted(new_ans))
 
-    # セッション状態へのセット
-    st.session_state.selected_questions = selected_questions
+    st.session_state.selected_questions = selected
     st.session_state.idx = 0
     st.session_state.score = 0
     st.session_state.show_answer = False
     st.session_state.quiz_started = True
     st.session_state.is_paused = False
-    st.session_state.page = "模擬テスト開始"
+    st.session_state.page = "🚁 模擬テスト"
+    st.session_state.elapsed_time = 0
+    st.session_state.start_timestamp = time.time()
+    st.session_state.time_limit = 1800 if q_count == 50 else 1080
 
-# --- 4. サイドバーメニュー（整理版） ---
-st.sidebar.title("🚁 Menu")
-# メニューからは「テスト画面」を消し、ホームと成績のみにする
-menu_options = ["ホーム・出題設定", "個人成績・習熟度"]
-current_menu = st.sidebar.radio("移動先", menu_options, index=0 if st.session_state.page != "個人成績・習熟度" else 1)
+# --- 4. サイドバーのデザイン修正 ---
+st.sidebar.markdown("### 🚁 第2等無人航空機\n### 試験対策") # ここを追加
+st.sidebar.divider()
 
-# サイドバーでメニューを切り替えた時の処理
-if current_menu != st.session_state.page and st.session_state.page != "模擬テスト開始":
-    st.session_state.page = current_menu
+options = ["🏠 ホーム", "📊 成績・習熟度"]
+if st.session_state.page == "🚁 模擬テスト":
+    options.insert(1, "🚁 模擬テスト")
 
-# --- 5. 各画面の表示 ---
+current_sel = st.sidebar.radio("メニュー", options, index=options.index(st.session_state.page))
 
-# 【ホーム画面】
-if st.session_state.page == "ホーム・出題設定":
-    st.title("🚁 第2等無人航空機 模擬テスト")
-    
-    # 中断しているテストがある場合
+if current_sel != st.session_state.page:
+    if st.session_state.page == "🚁 模擬テスト":
+        st.session_state.elapsed_time += (time.time() - st.session_state.start_timestamp)
+        st.session_state.is_paused = True
+    st.session_state.page = current_sel
+    st.rerun()
+
+# --- 5. メイン画面のヘッダーデザイン修正 ---
+st.caption("第2等無人航空機 試験対策") # 上に小さく表示
+st.header(st.session_state.page)    # ページ名を中サイズで表示
+st.divider()
+
+# --- 【ホーム画面】 ---
+if st.session_state.page == "🏠 ホーム":
     if st.session_state.is_paused:
-        st.warning(f"現在、テストを第 {st.session_state.idx + 1} 問で中断しています。")
-        col_pa1, col_pa2 = st.columns(2)
-        if col_pa1.button("▶️ 続きから再開する", use_container_width=True):
-            st.session_state.page = "模擬テスト開始"
+        st.warning(f"⚠️ テストが第 {st.session_state.idx + 1} 問で中断されています。")
+        c_p1, c_p2 = st.columns(2)
+        if c_p1.button("▶️ 続きから再開する", use_container_width=True):
+            st.session_state.start_timestamp = time.time()
+            st.session_state.page = "🚁 模擬テスト"
             st.rerun()
-        if col_pa2.button("🗑️ テストを破棄して新しく始める", use_container_width=True):
+        if c_p2.button("🗑️ 破棄して新しく始める", use_container_width=True):
             st.session_state.is_paused = False
             st.session_state.quiz_started = False
             st.rerun()
-    else:
+    
+    if not st.session_state.is_paused:
         with st.container(border=True):
+            st.subheader("📝 出題設定")
             col1, col2 = st.columns(2)
             q_count = col1.selectbox("問題数", [30, 50])
             mode = col2.radio("出題形式", ["全分野からバランスよく", "苦手分野を指定"])
-            target_cat = None
-            if mode == "苦手分野を指定":
-                target_cat = st.selectbox("特訓する分野を選択", ["規則", "システム", "運航", "リスク"])
+            target_cat = st.selectbox("特訓分野", ["規則", "システム", "運航", "リスク"]) if mode == "苦手分野を指定" else None
+            
+            st.info(f"⏱️ 制限時間: {'30分' if q_count == 50 else '18分'}")
             if st.button("🚀 テストを開始する", use_container_width=True):
                 start_quiz(q_count, mode, target_cat)
                 st.rerun()
 
-# 【テスト画面】
-elif st.session_state.page == "模擬テスト開始":
-    q = st.session_state.selected_questions[st.session_state.idx]
+# --- 【テスト画面】 ---
+elif st.session_state.page == "🚁 模擬テスト":
+    now = time.time()
+    rem = st.session_state.time_limit - (st.session_state.elapsed_time + (now - st.session_state.start_timestamp))
     
-    # 上部に中断ボタンを配置
-    if st.button("⬅️ 一時中断してホームに戻る"):
-        st.session_state.is_paused = True
-        st.session_state.page = "ホーム・出題設定"
-        st.rerun()
-        
-    st.subheader(f"問題 {st.session_state.idx + 1} / {len(st.session_state.selected_questions)}")
-    st.caption(f"分野: {q['category']}")
-    st.markdown(f"#### {q['question']}")
-    
-    ans_list = q['correct_labels'].split('&')
-    user_choices = []
-    for opt in q['display_options']:
-        if st.checkbox(opt, key=f"idx{st.session_state.idx}_{opt}"):
-            user_choices.append(opt[0])
-    
-    if not st.session_state.show_answer:
-        if st.button("回答を確定する"):
-            if len(user_choices) != len(ans_list):
-                st.error(f"{len(ans_list)}個選択してください。")
-            else:
-                st.session_state.show_answer = True
-                st.rerun()
-    else:
-        is_correct = set(user_choices) == set(ans_list)
-        if is_correct:
-            st.success(f"⭕ 正解！ (正解: {q['correct_labels']})")
-            if 'last_idx' not in st.session_state or st.session_state.last_idx != st.session_state.idx:
-                st.session_state.score += 1
-                st.session_state.last_idx = st.session_state.idx
-        else:
-            st.error(f"❌ 不正解... 正解は {q['correct_labels']}")
-        st.info(f"💡 **解説**\n{q['explanation']}")
-        
-        if st.button("次の問題へ"):
-            st.session_state.history.append({"cat": q['category'], "correct": is_correct, "q": q['question']})
-            if st.session_state.idx + 1 < len(st.session_state.selected_questions):
-                st.session_state.idx += 1
-                st.session_state.show_answer = False
-            else:
-                st.balloons()
-                st.session_state.quiz_started = False
-                st.session_state.is_paused = False
-                st.session_state.page = "個人成績・習熟度"
+    if rem <= 0:
+        st.error("⏰ 時間切れです！結果画面へ移動します。")
+        if st.button("結果を見る"):
+            st.session_state.quiz_started = False
+            st.session_state.page = "📊 成績・習熟度"
             st.rerun()
+    else:
+        m, s = divmod(int(rem), 60)
+        st.subheader(f"残り時間 {m:02d}:{s:02d} | 問題 {st.session_state.idx + 1} / {len(st.session_state.selected_questions)}")
+        
+        q = st.session_state.selected_questions[st.session_state.idx]
+        st.caption(f"カテゴリ: {q['category']}")
+        st.markdown(f"### {q['question']}")
+        
+        ans_needed = len(q['correct_labels'].split('&'))
+        user_choices = []
+        for opt in q['display_options']:
+            if st.checkbox(opt, key=f"q{st.session_state.idx}_{opt}"):
+                user_choices.append(opt[0])
+        
+        if not st.session_state.show_answer:
+            if st.button("回答を確定", use_container_width=True):
+                if len(user_choices) != ans_needed:
+                    st.error(f"{ans_needed}個選んでください")
+                else:
+                    st.session_state.show_answer = True
+                    st.rerun()
+        else:
+            is_ok = set(user_choices) == set(q['correct_labels'].split('&'))
+            if is_ok:
+                st.success(f"⭕ 正解！ (正解: {q['correct_labels']})")
+                if 'last_idx' not in st.session_state or st.session_state.last_idx != st.session_state.idx:
+                    st.session_state.score += 1
+                    st.session_state.last_idx = st.session_state.idx
+            else:
+                st.error(f"❌ 不正解... 正解は {q['correct_labels']}")
+            st.info(f"💡 **解説**\n{q['explanation']}")
+            
+            if st.button("次の問題へ", use_container_width=True):
+                st.session_state.history.append({"cat": q['category'], "correct": is_ok, "q": q['question']})
+                if st.session_state.idx + 1 < len(st.session_state.selected_questions):
+                    st.session_state.idx += 1
+                    st.session_state.show_answer = False
+                else:
+                    st.balloons()
+                    st.session_state.quiz_started = False
+                    st.session_state.page = "📊 成績・習熟度"
+                st.rerun()
 
-# 【成績画面】
-elif st.session_state.page == "個人成績・習熟度":
-    st.title("📊 あなたの学習習熟度")
+# --- 【成績画面】 ---
+elif st.session_state.page == "📊 成績・習熟度":
     if not st.session_state.history:
-        st.warning("まだ学習データがありません。")
+        st.info("まだテストの履歴がありません。")
     else:
         h_df = pd.DataFrame(st.session_state.history)
         col1, col2 = st.columns(2)
         with col1:
-            st.subheader("📁 分野別正解率")
-            stats = h_df.groupby('cat')['correct'].mean() * 100
-            st.bar_chart(stats)
+            st.subheader("分野別正解率")
+            st.bar_chart(h_df.groupby('cat')['correct'].mean() * 100)
         with col2:
-            st.subheader("📈 分野別解答数")
-            counts = h_df.groupby('cat')['q'].count()
-            st.bar_chart(counts)
-        st.subheader("🚩 復習が必要な問題（直近のミス）")
+            st.subheader("学習回数")
+            st.bar_chart(h_df.groupby('cat')['q'].count())
+        
+        st.subheader("🚩 最近間違えた問題")
         st.table(h_df[h_df['correct'] == False][['cat', 'q']].tail(10))
-        if st.button("ホームに戻る"):
-            st.session_state.page = "ホーム・出題設定"
-            st.rerun()
