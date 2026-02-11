@@ -130,35 +130,63 @@ elif st.session_state.page == "🏠 ホーム":
                 start_quiz(q_count, mode, target_cat); st.rerun()
 
 elif st.session_state.page == "🚁 模擬テスト":
+    # 1. 現在の経過時間を計算
     current_elapsed = time.time() - st.session_state.start_timestamp
     total_spent = st.session_state.elapsed_time + current_elapsed
     remaining = st.session_state.time_limit - total_spent
     
+    # --- レイアウト調整：最上部に中断ボタンと情報を配置 ---
+    # 比率 [1, 3] で左側に小さなボタン用スペースを確保
+    col_pause, col_status = st.columns([1, 3])
+    
+    with col_pause:
+        # 小さく「⏸ 中断」ボタンを配置
+        if st.button("⏸ 中断", key="pause_btn", help="現在の進捗を保存してホームに戻ります"):
+            st.session_state.elapsed_time += current_elapsed
+            st.session_state.is_paused = True
+            st.session_state.page = "🏠 ホーム"
+            st.rerun()
+            
+    with col_status:
+        # 残り時間と問題番号を横並びに（スマホを考慮して短縮表記）
+        if remaining <= 0:
+            st.error("⏰ 終了")
+        else:
+            m, s = divmod(int(remaining), 60)
+            st.markdown(f"**⏳ {m:02d}:{s:02d} | 問 {st.session_state.idx + 1}/{len(st.session_state.selected_questions)}**")
+
     if remaining <= 0:
-        st.error("⏰ 制限時間終了！")
-        if st.button("結果を見る"):
+        if st.button("結果を見る", use_container_width=True):
             st.session_state.final_time_spent = st.session_state.time_limit
-            st.session_state.quiz_started = False; st.session_state.page = "📊 成績・習熟度"; st.rerun()
+            st.session_state.quiz_started = False
+            st.session_state.page = "📊 成績・習熟度"
+            st.rerun()
     else:
-        m, s = divmod(int(remaining), 60)
-        st.subheader(f"⏳ 残り {m:02d}:{s:02d} | 問題 {st.session_state.idx + 1} / {len(st.session_state.selected_questions)}")
-        
+        # 問題エリア
+        st.divider()
         q = st.session_state.selected_questions[st.session_state.idx]
-        st.caption(f"カテゴリ: 【{q['category']}】")
+        st.caption(f"【{q['category']}】")
         st.markdown(f"### {q['question']}")
         
-        # 択一式に変更 (st.radio)
-        user_choice_text = st.radio("選択肢:", q['display_options'], index=None, key=f"r_{st.session_state.idx}")
+        # 択一式
+        user_choice_text = st.radio("選択してください:", q['display_options'], index=None, key=f"r_{st.session_state.idx}")
         
         if not st.session_state.show_answer:
             if st.button("回答を確定", use_container_width=True):
-                if not user_choice_text: st.error("答えを選んでください")
-                else: st.session_state.show_answer = True; st.rerun()
+                if not user_choice_text:
+                    st.error("答えを選んでください")
+                else:
+                    st.session_state.show_answer = True
+                    st.rerun()
         else:
-            user_label = user_choice_text[0] # 先頭のa, b, cを取得
+            # （以下、正誤判定と解説のコードはそのまま）
+            user_label = user_choice_text[0]
             is_ok = user_label == q['correct_label_shuffled']
-            if is_ok: st.success(f"⭕ 正解！")
-            else: st.error(f"❌ 不正解... 正解は {q['correct_label_shuffled']}")
+            if is_ok:
+                st.success("⭕ 正解！")
+            else:
+                st.error(f"❌ 不正解... 正解: {q['correct_label_shuffled']}")
+            
             st.info(f"💡 解説: {q['explanation']}")
             
             if st.button("次の問題へ", use_container_width=True):
@@ -166,10 +194,12 @@ elif st.session_state.page == "🚁 模擬テスト":
                 st.session_state.history.append(res)
                 st.session_state.current_quiz_history.append(res)
                 if st.session_state.idx + 1 < len(st.session_state.selected_questions):
-                    st.session_state.idx += 1; st.session_state.show_answer = False
+                    st.session_state.idx += 1
+                    st.session_state.show_answer = False
                 else:
                     st.session_state.final_time_spent = total_spent
-                    st.session_state.quiz_started = False; st.session_state.page = "📊 成績・習熟度"
+                    st.session_state.quiz_started = False
+                    st.session_state.page = "📊 成績・習熟度"
                 st.rerun()
 
 elif st.session_state.page == "📊 成績・習熟度":
